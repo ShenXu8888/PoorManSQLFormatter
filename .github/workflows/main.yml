@@ -1,4 +1,4 @@
-name: "test: formatting queries"
+name: "Shen: formatting queries"
 on: # rebuild any PRs and {master, main} branch changes
     pull_request:
     push:
@@ -15,7 +15,7 @@ jobs:
             - name: Check out Git repository
               uses: actions/checkout@v2.0.0
 
-            - name: Install zetasql
+            - name: Install zetasql/poormansql
               run: |
                 wget https://github.com/Matts966/zetasql-formatter/releases/latest/download/zetasql-formatter_linux_x86_64.zip
                 sudo unzip zetasql-formatter_linux_x86_64.zip -d /usr/local/bin
@@ -29,6 +29,6 @@ jobs:
               with:
                 github_token: ${{ secrets.github_token }}
                 auto_fix: "true"
-                git_name: "[TEST] BigQuery AutoFormatter"
+                git_name: "[Shen] SQLQuery AutoFormatter"
                 git_email: "test+test@example.com"
-                commit_message: "[TEST] Auto-format queries"
+                commit_message: "[Shen] Auto-format queries"
