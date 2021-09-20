@@ -6,51 +6,67 @@
 --                SXuStaffingParse_X
 -- DATABASE:      Staging
 --*********************************************************************
-
 -- Make sure that Source and Target versions are compatible
-DECLARE @iTargetVersion tinyint,
-        @iTargetMinorVersion int,
-        @iSourceVersion tinyint,
-        @iSourceMinorVersion int,
-        @VersionCompatible bit,
-        @sVersionErrorMessage nvarchar(500)
+DECLARE @iTargetVersion TINYINT,
+	@iTargetMinorVersion INT,
+	@iSourceVersion TINYINT,
+	@iSourceMinorVersion INT,
+	@VersionCompatible BIT,
+	@sVersionErrorMessage NVARCHAR(500)
+
 SET @iSourceVersion = 29
 SET @iSourceMinorVersion = 66
-SET @iTargetVersion = CAST( Epic.GetConfigurationValue( N'WarehouseVersion' ) AS tinyint )
-SET @iTargetMinorVersion = CAST( Epic.GetConfigurationValue( N'WarehouseMinorVersion' ) AS int )
-SET @VersionCompatible = CASE WHEN @iTargetVersion = @iSourceVersion
-                                OR ( @iTargetVersion > @iSourceVersion AND @iTargetVersion <= @iSourceVersion + 4 )
-                                  THEN 1 ELSE 0 END
+SET @iTargetVersion = CAST(Epic.GetConfigurationValue(N'WarehouseVersion') AS TINYINT)
+SET @iTargetMinorVersion = CAST(Epic.GetConfigurationValue(N'WarehouseMinorVersion') AS INT)
+SET @VersionCompatible = CASE 
+		WHEN @iTargetVersion = @iSourceVersion
+			OR (
+				@iTargetVersion > @iSourceVersion
+				AND @iTargetVersion <= @iSourceVersion + 4
+				)
+			THEN 1
+		ELSE 0
+		END
+
 IF @VersionCompatible = 0
 BEGIN
-  SET @sVersionErrorMessage = N'The target version must be within four versions of the source version for this script to be installed. 
-The source version is ' + CAST( Epic.GetWarehouseVersionName( @iSourceVersion, @iSourceMinorVersion ) AS nvarchar(50) ) 
-+ N', so this script can only be installed on versions ' + CAST( Epic.GetWarehouseVersionName( @iSourceVersion, 0 ) AS nvarchar(50) ) 
-+ N'+, ' + CAST( Epic.GetWarehouseVersionName( @iSourceVersion + 1, 0 ) AS nvarchar(50)) + N'+, ' + CAST( Epic.GetWarehouseVersionName( @iSourceVersion + 2, 0 ) AS nvarchar(50) ) 
-+ N'+, ' + CAST( Epic.GetWarehouseVersionName(@iSourceVersion + 3, 0) AS nvarchar(50)) + N'+, and ' + CAST( Epic.GetWarehouseVersionName(@iSourceVersion + 4, 0) AS nvarchar(50)) + N'+.' 
-+ N' The current target version is ' + CAST( Epic.GetWarehouseVersionName( @iTargetVersion, @iTargetMinorVersion ) AS nvarchar(50) ) + N'.';
-  THROW 50001, @sVersionErrorMessage, 0;
+	SET @sVersionErrorMessage = N'The target version must be within four versions of the source version for this script to be installed. 
+The source version is ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion, @iSourceMinorVersion) AS NVARCHAR(50)) + N', so this script can only be installed on versions ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion, 0) AS NVARCHAR(50)) + N'+, ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion + 1, 0) AS NVARCHAR(50)) + N'+, ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion + 2, 0) AS NVARCHAR(50)) + N'+, ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion + 3, 0) AS NVARCHAR(50)) + N'+, and ' + CAST(Epic.GetWarehouseVersionName(@iSourceVersion + 4, 0) AS NVARCHAR(50)) + N'+.' + N' The current target version is ' + CAST(Epic.GetWarehouseVersionName(@iTargetVersion, @iTargetMinorVersion) AS NVARCHAR(50)) + N'.';
+
+	THROW 50001,
+		@sVersionErrorMessage,
+		0;
 END
 
 --Check that the database being used is staging database
 IF DB_NAME() = dbo.GetReportingDatabaseName()
 BEGIN
-  ;THROW 50001, 'Script cannot be run on the reporting database. Please run on the staging database.', 0; 
+		;
+
+	THROW 50001,
+		'Script cannot be run on the reporting database. Please run on the staging database.',
+		0;
 END
 
 -- Make sure that all non-recurring jobs that need to be processed are completed
-DECLARE @JobExistCheck bit
+DECLARE @JobExistCheck BIT
 
-EXECUTE Epic.CheckJobExistence @i_IgnoreRecurringJobs = 1, @o_Exist = @JobExistCheck OUTPUT
+EXECUTE Epic.CheckJobExistence @i_IgnoreRecurringJobs = 1,
+	@o_Exist = @JobExistCheck OUTPUT
+
 IF @JobExistCheck = 1
-BEGIN;
-  THROW 50001, N'There are background jobs waiting to be processed. All non-recurring jobs must be processed before executing this script.', 0;
+BEGIN
+		;
+
+	THROW 50001,
+		N'There are background jobs waiting to be processed. All non-recurring jobs must be processed before executing this script.',
+		0;
 END
 
 -- Make sure no lookups are broken
-DECLARE @sBrokenLookups nvarchar(MAX)
-EXECUTE Epic.StringAgg
-  @i_sSql = N'SELECT <<Lookups.TableEtlName + N''.'' + Lookups.KeyColumnName>>
+DECLARE @sBrokenLookups NVARCHAR(MAX)
+
+EXECUTE Epic.StringAgg @i_sSql = N'SELECT <<Lookups.TableEtlName + N''.'' + Lookups.KeyColumnName>>
                 FROM Config.Lookups Lookups
                   INNER JOIN Config.TableEtls TableEtls
                     ON Lookups.TableEtlName = TableEtls.TableEtlName
@@ -60,143 +76,218 @@ EXECUTE Epic.StringAgg
                   AND ( Lookups.LookupType IN ( N''DurableId'', N''SourceDataDurableId'' )
                     OR ( Lookups.LookupType IN ( N''Id'', N''SourceDataId'' ) AND COALESCE( Lookups.DateColumnName, N'''' ) <> N'''' ) ) 
                 ORDER BY Lookups.TableEtlName, Lookups.KeyColumnName',
-  @o_sDelimitedString = @sBrokenLookups OUTPUT
-IF COALESCE( @sBrokenLookups, N'' ) <> N''
+	@o_sDelimitedString = @sBrokenLookups OUTPUT
+
+IF COALESCE(@sBrokenLookups, N'') <> N''
 BEGIN
-  SET @sBrokenLookups = N'Unable to set the component to no change tracking (Type 1) because this would break the following lookup columns to SXuStaffingEventFactX: ' + @sBrokenLookups;
-  THROW 50001, @sBrokenLookups, 0;
+	SET @sBrokenLookups = N'Unable to set the component to no change tracking (Type 1) because this would break the following lookup columns to SXuStaffingEventFactX: ' + @sBrokenLookups;
+
+	THROW 50001,
+		@sBrokenLookups,
+		0;
 END
 
 -- Check if historical rows will need to be deleted
-DECLARE @RemoveHistoricalRows bit
-SET @RemoveHistoricalRows = CASE WHEN EXISTS ( SELECT 1
-                                                 FROM Config.TableEtlColumns
-                                                 WHERE TableEtlName = N'SXuStaffingEventFactX'
-                                                     AND Type2 = 1 ) THEN 1
-                                 ELSE 0 END
+DECLARE @RemoveHistoricalRows BIT
+
+SET @RemoveHistoricalRows = CASE 
+		WHEN EXISTS (
+				SELECT 1
+				FROM Config.TableEtlColumns
+				WHERE TableEtlName = N'SXuStaffingEventFactX'
+					AND Type2 = 1
+				)
+			THEN 1
+		ELSE 0
+		END
 
 -- Make sure storing id mappings can be changed safely
-DECLARE @WillBeProcessingIdMappings bit = 0
-DECLARE @IsProcessingIdMappings bit = Epic.GetTableInfo( N'SXuStaffingEventFactX', N'ProcessIdMappings' )
-DECLARE @sPendingIdMappingTableName nvarchar(200) = Epic.GetTableInfo( N'SXuStaffingEventFactX', N'PendingIdMappings' )
-DECLARE @PendingTableHasRows bit
+DECLARE @WillBeProcessingIdMappings BIT = 0
+DECLARE @IsProcessingIdMappings BIT = Epic.GetTableInfo(N'SXuStaffingEventFactX', N'ProcessIdMappings')
+DECLARE @sPendingIdMappingTableName NVARCHAR(200) = Epic.GetTableInfo(N'SXuStaffingEventFactX', N'PendingIdMappings')
+DECLARE @PendingTableHasRows BIT
 
 -- Cannot change if merges have not been processed yet
 IF @WillBeProcessingIdMappings <> @IsProcessingIdMappings
-   AND EXISTS( SELECT 1
-                 FROM Epic.MergeQueue MergeQueue
-                 WHERE MergeQueue.TableName = N'SXuStaffingEventFactX'
-                   AND ( MergeQueue.Success IS NULL OR MergeQueue.Success = 0 ) )
+	AND EXISTS (
+		SELECT 1
+		FROM Epic.MergeQueue MergeQueue
+		WHERE MergeQueue.TableName = N'SXuStaffingEventFactX'
+			AND (
+				MergeQueue.Success IS NULL
+				OR MergeQueue.Success = 0
+				)
+		)
 BEGIN
-  ;THROW 50001, N'Cannot start or stop storing ID mappings until all merges for SXuStaffingEventFactX have been resolved', 0;
+		;
+
+	THROW 50001,
+		N'Cannot start or stop storing ID mappings until all merges for SXuStaffingEventFactX have been resolved',
+		0;
 END
 
 -- Cannot disable if there are open record matches for the source data table
 IF @WillBeProcessingIdMappings = 0
-   AND @IsProcessingIdMappings = 1
-   AND EXISTS( SELECT 1
-                 FROM Epic.WorkQueue WorkQueue
-                 WHERE WorkQueue.TableName = N'SXuStaffingEventFactXSourceData'
-                   AND WorkQueue.Type = N'RecordMatch' 
-                   AND WorkQueue.Status IN ( N'Open', N'Deferred' ) )
+	AND @IsProcessingIdMappings = 1
+	AND EXISTS (
+		SELECT 1
+		FROM Epic.WorkQueue WorkQueue
+		WHERE WorkQueue.TableName = N'SXuStaffingEventFactXSourceData'
+			AND WorkQueue.Type = N'RecordMatch'
+			AND WorkQueue.STATUS IN (N'Open', N'Deferred')
+		)
 BEGIN
-  ;THROW 50001, N'Cannot stop storing ID mappings until all record match work queue items for SXuStaffingEventFactXSourceData have been resolved', 0;
+		;
+
+	THROW 50001,
+		N'Cannot stop storing ID mappings until all record match work queue items for SXuStaffingEventFactXSourceData have been resolved',
+		0;
 END
 
 -- Cannot disable if there are pending ID mappings
 IF @WillBeProcessingIdMappings = 0
-   AND @IsProcessingIdMappings = 1
+	AND @IsProcessingIdMappings = 1
 BEGIN
-  EXECUTE Epic.HasRows @i_sTableNameWithSchema = @sPendingIdMappingTableName,
-                       @HasRows = @PendingTableHasRows OUTPUT,
-                       @i_TableInReporting = 1
-  IF @PendingTableHasRows = 1
-  BEGIN
-    ;THROW 50001, N'Cannot stop storing ID mappings until all pending ID mappings have been resolved', 0;
-  END
+	EXECUTE Epic.HasRows @i_sTableNameWithSchema = @sPendingIdMappingTableName,
+		@HasRows = @PendingTableHasRows OUTPUT,
+		@i_TableInReporting = 1
+
+	IF @PendingTableHasRows = 1
+	BEGIN
+			;
+
+		THROW 50001,
+			N'Cannot stop storing ID mappings until all pending ID mappings have been resolved',
+			0;
+	END
 END
 
 -- Make sure source data can be safely disabled
-DECLARE @StoringSourceData bit = 0
+DECLARE @StoringSourceData BIT = 0
 
 IF @StoringSourceData = 0
-   AND EXISTS( SELECT 1
-                 FROM Config.Lookups
-                 WHERE Lookups.LookupTableName = N'SXuStaffingEventFactXSourceData'
-                   AND Lookups.LookupType IN ( N'SourceDataId', N'SourceDataDurableId' ) )
+	AND EXISTS (
+		SELECT 1
+		FROM Config.Lookups
+		WHERE Lookups.LookupTableName = N'SXuStaffingEventFactXSourceData'
+			AND Lookups.LookupType IN (N'SourceDataId', N'SourceDataDurableId')
+		)
 BEGIN
-  ;THROW 50001, N'Cannot stop storing source data in SXuStaffingEventFactX while source data lookups to it exist', 0;
+		;
+
+	THROW 50001,
+		N'Cannot stop storing source data in SXuStaffingEventFactX while source data lookups to it exist',
+		0;
 END
 
 IF @StoringSourceData = 0
-   AND 0 = 1
+	AND 0 = 1
 BEGIN
-  ;THROW 50001, N'Cannot stop storing source data in SXuStaffingEventFactX while SXuStaffingEventFactX is forcing source data lookups', 0;
+		;
+
+	THROW 50001,
+		N'Cannot stop storing source data in SXuStaffingEventFactX while SXuStaffingEventFactX is forcing source data lookups',
+		0;
 END
 
 IF @StoringSourceData = 0
-   AND 0 = 1
+	AND 0 = 1
 BEGIN
-  ;THROW 50001, N'Cannot stop storing source data in SXuStaffingEventFactX while SXuStaffingEventFactX has store ID mappings enabled', 0;
+		;
+
+	THROW 50001,
+		N'Cannot stop storing source data in SXuStaffingEventFactX while SXuStaffingEventFactX has store ID mappings enabled',
+		0;
 END
 
 -- Make sure that there are no failed ETL tasks for the DMC
-IF EXISTS( SELECT 1 
-             FROM Epic.FailedEtlTasks
-               WHERE EtlName = N'SXuStaffingEventFactX'
-               AND [Fixed] = 0
-           UNION ALL
-           SELECT 1
-             FROM Epic.EtlPerformanceInfoLog
-             WHERE [Level] IN (N'Task', N'Detail')
-               AND EtlName = N'SXuStaffingEventFactX'
-               AND EndTime IS NULL )
-BEGIN;
-  THROW 50001, N'SXuStaffingEventFactX can''t be deployed because it has a failed ETL task and/or is currently running', 0;
+IF EXISTS (
+		SELECT 1
+		FROM Epic.FailedEtlTasks
+		WHERE EtlName = N'SXuStaffingEventFactX'
+			AND [Fixed] = 0
+		
+		UNION ALL
+		
+		SELECT 1
+		FROM Epic.EtlPerformanceInfoLog
+		WHERE [Level] IN (N'Task', N'Detail')
+			AND EtlName = N'SXuStaffingEventFactX'
+			AND EndTime IS NULL
+		)
+BEGIN
+		;
+
+	THROW 50001,
+		N'SXuStaffingEventFactX can''t be deployed because it has a failed ETL task and/or is currently running',
+		0;
 END
 
 -- Make sure that the package sources exist
-IF Epic.GetIdForSourceName( N'SXu ErsatzHR' ) IS NULL
-BEGIN;
-  THROW 50001, N'Package source SXu ErsatzHR doesn''t exist in the target environment', 0;
+IF Epic.GetIdForSourceName(N'SXu ErsatzHR') IS NULL
+BEGIN
+		;
+
+	THROW 50001,
+		N'Package source SXu ErsatzHR doesn''t exist in the target environment',
+		0;
 END
 
 -- Make sure that the selected packages do not exist in other DMCs
-DECLARE @sDmcNameInUse nvarchar(300),
-        @sPackageNameInUse nvarchar(300),
-        @sPackageErrorMessage nvarchar(MAX)
+DECLARE @sDmcNameInUse NVARCHAR(300),
+	@sPackageNameInUse NVARCHAR(300),
+	@sPackageErrorMessage NVARCHAR(MAX)
 
-SET @sPackageErrorMessage = ISNULL( @sPackageErrorMessage, '' ) 
+SET @sPackageErrorMessage = ISNULL(@sPackageErrorMessage, '')
+
 SELECT @sPackageErrorMessage += N'Package ' + Packages.PackageName + N' is in use in DMC ' + Packages.TableEtlName + N'. '
-  FROM Config.Packages Packages
-  WHERE Packages.TableEtlName <> N'SXuStaffingEventFactX'
-    AND Packages.PackageName IN (N'SXuStaffingEventLoad_X',N'SXuStaffingParse_X')
+FROM Config.Packages Packages
+WHERE Packages.TableEtlName <> N'SXuStaffingEventFactX'
+	AND Packages.PackageName IN (N'SXuStaffingEventLoad_X', N'SXuStaffingParse_X')
+
 IF @sPackageErrorMessage <> N''
-BEGIN;
-  THROW 50001, @sPackageErrorMessage, 0;
+BEGIN
+		;
+
+	THROW 50001,
+		@sPackageErrorMessage,
+		0;
 END
 
 -- Make sure that you can acquire system level lock
-DECLARE @SuccessCheck bit,
-        @sErrorCheck nvarchar(MAX),
-        @sLockedByCheck nvarchar(200)
+DECLARE @SuccessCheck BIT,
+	@sErrorCheck NVARCHAR(MAX),
+	@sLockedByCheck NVARCHAR(200)
 
-EXECUTE Epic.LockEtl N'System', 1, @i_sLockedBy = N'Console Generated Script', @i_nLoopDelaySeconds = 1, @i_nTimeoutSeconds = 0, 
-  @o_IsSuccess = @SuccessCheck OUTPUT, @o_sCurrentlyLockedBy = @sLockedByCheck OUTPUT, @i_IsExecution = 0 
+EXECUTE Epic.LockEtl N'System',
+	1,
+	@i_sLockedBy = N'Console Generated Script',
+	@i_nLoopDelaySeconds = 1,
+	@i_nTimeoutSeconds = 0,
+	@o_IsSuccess = @SuccessCheck OUTPUT,
+	@o_sCurrentlyLockedBy = @sLockedByCheck OUTPUT,
+	@i_IsExecution = 0
+
 IF @SuccessCheck = 0
 BEGIN
-  SET @sErrorCheck = CASE WHEN NULLIF(@sLockedByCheck, N'') IS NULL THEN N'Background process' ELSE @sLockedByCheck END
-    + N' is currently locking system. Try again later.';
-  THROW 50001, @sErrorCheck, 1;
+	SET @sErrorCheck = CASE 
+			WHEN NULLIF(@sLockedByCheck, N'') IS NULL
+				THEN N'Background process'
+			ELSE @sLockedByCheck
+			END + N' is currently locking system. Try again later.';
+
+	THROW 50001,
+		@sErrorCheck,
+		1;
 END
 
 SET NOCOUNT ON
 
-DECLARE @sDmcName nvarchar(50),
-        @EpicReleased bit,
-        @HasDeveloperAccess bit,
-        @ScriptType nvarchar(50),
-        @sPackageNames nvarchar(max)
+DECLARE @sDmcName NVARCHAR(50),
+	@EpicReleased BIT,
+	@HasDeveloperAccess BIT,
+	@ScriptType NVARCHAR(50),
+	@sPackageNames NVARCHAR(max)
 
 SET @sDmcName = N'SXuStaffingEventFactX'
 SET @EpicReleased = 0
@@ -205,2475 +296,2388 @@ SET @ScriptType = N'Dmc&Package'
 SET @sPackageNames = N'SXuStaffingEventLoad_X,SXuStaffingParse_X'
 
 BEGIN TRY
-
-  EXECUTE Console.PreDmcScript @sDmcName, @EpicReleased, @HasDeveloperAccess, @ScriptType
-
-  EXECUTE Console.PreInsertIntoEtlDependencies @sDmcName, @EpicReleased, @ScriptType, @sPackageNames
-
-  -- Insert into EtlDependencies
-  EXECUTE Console.InsertIntoEtlDependencies
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sDependentObjectName = N'SXuStaffingEventLoad_X',
-    @i_sDependentObjectType = N'Package',
-    @i_sDependencyTableEtlName = N'EmployeeDim',
-    @i_sDependencyObjectName = N'EmployeeDim',
-    @i_sDependencyObjectType = N'Component',
-    @i_sDependencyType = N'Load',
-    @i_EpicReleased = 0,
-    @i_InheritedFromParentDmc = 0
-
-  EXECUTE Console.InsertIntoEtlDependencies
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sDependentObjectName = N'SXuStaffingEventLoad_X',
-    @i_sDependentObjectType = N'Package',
-    @i_sDependencyTableEtlName = N'SXu_EmployeeRoleDimX',
-    @i_sDependencyObjectName = N'SXu_EmployeeRoleDimX',
-    @i_sDependencyObjectType = N'Component',
-    @i_sDependencyType = N'Load',
-    @i_EpicReleased = 0,
-    @i_InheritedFromParentDmc = 0
-
-  EXECUTE Console.InsertIntoEtlDependencies
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sDependentObjectName = N'SXuStaffingParse_X',
-    @i_sDependentObjectType = N'Package',
-    @i_sDependencyTableEtlName = N'EmployeeDim',
-    @i_sDependencyObjectName = N'EmployeeDim',
-    @i_sDependencyObjectType = N'Component',
-    @i_sDependencyType = N'Load',
-    @i_EpicReleased = 0,
-    @i_InheritedFromParentDmc = 0
-
-  EXECUTE Console.InsertIntoEtlDependencies
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sDependentObjectName = N'SXuStaffingParse_X',
-    @i_sDependentObjectType = N'Package',
-    @i_sDependencyTableEtlName = N'SXu_EmployeeRoleDimX',
-    @i_sDependencyObjectName = N'SXu_EmployeeRoleDimX',
-    @i_sDependencyObjectType = N'Component',
-    @i_sDependencyType = N'Load',
-    @i_EpicReleased = 0,
-    @i_InheritedFromParentDmc = 0
-
-  EXECUTE Console.PostInsertIntoEtlDependencies @sDmcName, @EpicReleased
-
-  EXECUTE Console.PreInsertIntoLookups @sDmcName, @EpicReleased
-
-  -- Insert into Lookups
-  EXECUTE Console.InsertIntoLookups
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sKeyColumnName = N'EmployeeDurableKey',
-    @i_sLookupTableName = N'EmployeeDim',
-    @i_sLookupType = N'DurableKey',
-    @i_sIdTypeColumnName = NULL,
-    @i_sIdColumnName = N'EmployeeDurableKey',
-    @i_sIdTypeIdColumnName = NULL,
-    @i_sNumericIdColumnName = NULL,
-    @i_sDateColumnName = NULL,
-    @i_sSourceColumnName = NULL,
-    @i_MergeShouldUpdate = 1,
-    @i_EpicReleased = 0
-
-  EXECUTE Console.InsertIntoLookups
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sKeyColumnName = N'EmployeeRoleKey',
-    @i_sLookupTableName = N'SXu_EmployeeRoleDimX',
-    @i_sLookupType = N'Id',
-    @i_sIdTypeColumnName = N'EmployeeRoleIdType',
-    @i_sIdColumnName = N'EmployeeRoleId',
-    @i_sIdTypeIdColumnName = N'EmployeeRoleIdTypeId',
-    @i_sNumericIdColumnName = NULL,
-    @i_sDateColumnName = NULL,
-    @i_sSourceColumnName = NULL,
-    @i_MergeShouldUpdate = 1,
-    @i_EpicReleased = 0
-
-  EXECUTE Console.InsertIntoLookups
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sKeyColumnName = N'StaffingDateKey',
-    @i_sLookupTableName = N'DateDim',
-    @i_sLookupType = N'Date',
-    @i_sIdTypeColumnName = NULL,
-    @i_sIdColumnName = N'StaffingDate',
-    @i_sIdTypeIdColumnName = NULL,
-    @i_sNumericIdColumnName = NULL,
-    @i_sDateColumnName = NULL,
-    @i_sSourceColumnName = NULL,
-    @i_MergeShouldUpdate = 1,
-    @i_EpicReleased = 0
-
-  EXECUTE Console.InsertIntoLookups
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sKeyColumnName = N'EmployeeKey',
-    @i_sLookupTableName = N'EmployeeDim',
-    @i_sLookupType = N'Key',
-    @i_sIdTypeColumnName = NULL,
-    @i_sIdColumnName = N'EmployeeKey',
-    @i_sIdTypeIdColumnName = NULL,
-    @i_sNumericIdColumnName = NULL,
-    @i_sDateColumnName = NULL,
-    @i_sSourceColumnName = NULL,
-    @i_MergeShouldUpdate = 1,
-    @i_EpicReleased = 0
-
-  -- Insert into DmcMatching
-  --    No data   
-
-  -- Insert into MatchingRules
-  --    No data   
-
-  -- Insert into MatchingRuleColumns
-  --    No data   
-
-  -- Insert into MatchingRuleColumnExcludedValues
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoPackages @i_sDmcName = @sDmcName, @i_EpicReleased = @EpicReleased, @i_sPackageNames = @sPackageNames
-
-  -- Insert into Packages
-  EXECUTE Console.InsertIntoPackages
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sDisplayName = N'',
-    @i_sGroupName = N'',
-    @i_sProcedureName = N'dbo.SXu_Ersatz_StaffingEventFact_Load_X',
-    @i_sExtractMethod = N'Procedure',
-    @i_sDestinationType = N'Reporting',
-    @i_sAction = N'Load',
-    @i_SingleUse = 0,
-    @i_ExcludeFromNightly = 0,
-    @i_ExcludeFromNightlyReleased = 0,
-    @i_ExcludeFromNightlyOverride = NULL,
-    @i_iProcessIndex = NULL,
-    @i_sDescription = N'',
-    @i_sClarityFullExtractQuery = N'',
-    @i_sClarityOracleFullExtractQuery = N'',
-    @i_sClarityIncrementalExtractQuery = N'',
-    @i_sClarityOracleIncrementalExtractQuery = N'',
-    @i_sClarityBackfillDeleteExtractQuery = N'',
-    @i_sClarityOracleBackfillDeleteExtractQuery = N'',
-    @i_iFirstEpicVersionId = 98,
-    @i_iLastEpicVersionId = 32767,
-    @i_sClarityBackfillThreshold = N'',
-    @i_sClarityIncrementalThreshold = N'',
-    @i_sRandomSampleSize = N'',
-    @i_sRandomSampleThreshold = N'',
-    @i_EpicReleased = 0,
-    @i_EtlLeadOwned = 0,
-    @i_sLineageProcedureName = N'',
-    @i_NeedsClarityValidation = 0,
-    @i_ExecuteIn32BitMode = NULL,
-    @i_sCatalogLocation = N'',
-    @i_IsTargetingPackageSpecificImportTable = 1,
-    @i_SupportsMultipleClarityVersions = 0,
-    @i_ClarityFullExtractQueryBatchMode = 0,
-    @i_ClarityIncrementalExtractQueryBatchMode = 0,
-    @i_IgnoreStringIdTypesDuringLoad = 0,
-    @i_PerformsReverseBusinessKeyLookups = 0,
-    @i_RecoverOnFailure = 1,
-    @i_sClarityUniqueTableOverrideCode = N'',
-    @i_sClarityOracleUniqueTableOverrideCode = N''
-
-  EXECUTE Console.InsertIntoPackages
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sDisplayName = N'',
-    @i_sGroupName = N'',
-    @i_sProcedureName = N'',
-    @i_sExtractMethod = N'SSIS',
-    @i_sDestinationType = N'Reporting',
-    @i_sAction = N'Load',
-    @i_SingleUse = 0,
-    @i_ExcludeFromNightly = 0,
-    @i_ExcludeFromNightlyReleased = 0,
-    @i_ExcludeFromNightlyOverride = NULL,
-    @i_iProcessIndex = 0,
-    @i_sDescription = N'',
-    @i_sClarityFullExtractQuery = N'',
-    @i_sClarityOracleFullExtractQuery = N'',
-    @i_sClarityIncrementalExtractQuery = N'',
-    @i_sClarityOracleIncrementalExtractQuery = N'',
-    @i_sClarityBackfillDeleteExtractQuery = N'',
-    @i_sClarityOracleBackfillDeleteExtractQuery = N'',
-    @i_iFirstEpicVersionId = 98,
-    @i_iLastEpicVersionId = 32767,
-    @i_sClarityBackfillThreshold = N'',
-    @i_sClarityIncrementalThreshold = N'',
-    @i_sRandomSampleSize = N'',
-    @i_sRandomSampleThreshold = N'',
-    @i_EpicReleased = 0,
-    @i_EtlLeadOwned = 0,
-    @i_sLineageProcedureName = N'',
-    @i_NeedsClarityValidation = 0,
-    @i_ExecuteIn32BitMode = 0,
-    @i_sCatalogLocation = N'',
-    @i_IsTargetingPackageSpecificImportTable = 0,
-    @i_SupportsMultipleClarityVersions = 0,
-    @i_ClarityFullExtractQueryBatchMode = 0,
-    @i_ClarityIncrementalExtractQueryBatchMode = 0,
-    @i_IgnoreStringIdTypesDuringLoad = 0,
-    @i_PerformsReverseBusinessKeyLookups = 0,
-    @i_RecoverOnFailure = 1,
-    @i_sClarityUniqueTableOverrideCode = N'',
-    @i_sClarityOracleUniqueTableOverrideCode = N''
-
-  EXECUTE Console.PreInsertIntoPackageSources @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageSources
-  EXECUTE Console.InsertIntoPackageSources
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_iSourceId = 10001,
-    @i_sSourceName = N'SXu ErsatzHR',
-    @i_sIdTypeOverride = N'',
-    @i_RepeatBackfill = 0,
-    @i_RunIncremental = 0
-
-  EXECUTE Console.InsertIntoPackageSources
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_iSourceId = 10001,
-    @i_sSourceName = N'SXu ErsatzHR',
-    @i_sIdTypeOverride = N'',
-    @i_RepeatBackfill = 0,
-    @i_RunIncremental = 0
-
-  EXECUTE Console.PostInsertIntoPackageSources @sDmcName
-
-  -- Insert into PackageBaseIdColumns
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoPackageCategoryTables @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageCategoryTables
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoPackageClaritySourceColumns @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageClaritySourceColumns
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoPackageClarityTables @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageClarityTables
-  --    No data   
-
-  EXECUTE Console.PostInsertIntoPackageClarityTables
-
-  EXECUTE Console.PreInsertIntoPackageColumns @EpicReleased
-
-  -- Insert into PackageColumns
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'_IsIncremental',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'bit',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'_LoadId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'tinyint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'_PackageId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'_SourceId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'int',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'DurableKey',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeDurableKey',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 0,
-    @i_sDataType = N'bigint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeId',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeIdType',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeIdTypeId',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeKey',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 0,
-    @i_sDataType = N'bigint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeRoleId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeRoleIdType',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 0,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeRoleIdTypeId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 0,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'HoursLogged',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'numeric',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = 18,
-    @i_iNumericScale = 2,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'Id',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'IdType',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'IdTypeId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'NumericBaseId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'numeric',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = 18,
-    @i_iNumericScale = 0,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'StaffingDate',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'datetime',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'StringBaseId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'_IsIncremental',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'bit',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'_LoadId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'tinyint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'_PackageId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'_SourceId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'int',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'DurableKey',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeDurableKey',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'bigint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeId',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeIdType',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeIdTypeId',
-    @i_sDescription = N'',
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeKey',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'bigint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeRoleId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeRoleIdType',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'EmployeeRoleIdTypeId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'HoursLogged',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'numeric',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = 18,
-    @i_iNumericScale = 2,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'Id',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'IdType',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'IdTypeId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'smallint',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'NumericBaseId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'numeric',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = 18,
-    @i_iNumericScale = 0,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'StaffingDate',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'datetime',
-    @i_iStringLength = NULL,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.InsertIntoPackageColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sColumnName = N'StringBaseId',
-    @i_sDescription = NULL,
-    @i_sExpression = NULL,
-    @i_IgnoreError = 1,
-    @i_sDataType = N'nvarchar',
-    @i_iStringLength = 50,
-    @i_iNumericPrecision = NULL,
-    @i_iNumericScale = NULL,
-    @i_IsDelete = 0,
-    @i_IsValid = 1,
-    @i_EpicReleased = 0,
-    @i_sClarityTimeZone = NULL,
-    @i_sTimeZoneOverride = NULL
-
-  EXECUTE Console.PreInsertIntoPackageAllowedForeignKeyIdTypes
-
-  -- Insert into PackageAllowedForeignKeyIdTypes
-  EXECUTE Console.InsertIntoPackageAllowedForeignKeyIdTypes
-    @i_sDmcName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sLookupDmcName = N'SXu_EmployeeRoleDimX',
-    @i_sIdTypeIdColumnName = N'EmployeeRoleIdTypeId',
-    @i_sIdType = N'ErsatzEmployeeRoleId',
-    @i_EpicReleased = 0
-
-  EXECUTE Console.PostInsertIntoPackageAllowedForeignKeyIdTypes @sDmcName
-
-  EXECUTE Console.PreInsertIntoPackageDataDependencies @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageDataDependencies
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoPackageDataSources @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageDataSources
-  EXECUTE Console.InsertIntoPackageDataSources
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sColumnName = N'EmployeeKey',
-    @i_sSourceTableName = N'EmployeeDIM',
-    @i_sSourceColumnName = N'EmployeeKey',
-    @i_EpicReleased = 0,
-    @i_IsAutomaticallyGenerated = 0,
-    @i_IsValid = 1
-
-  EXECUTE Console.PreInsertIntoPackageIdTypes @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageIdTypes
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sIdType = N'EpicUserID',
-    @i_sDescription = N''
-
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sIdType = N'EpicUserID|Line',
-    @i_sDescription = N''
-
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sIdType = N'ErsatzEmployeeId',
-    @i_sDescription = N''
-
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sIdType = N'ErsatzEmployeeRoleId',
-    @i_sDescription = N''
-
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingEventLoad_X',
-    @i_sIdType = N'ErsatzStaffingEventId',
-    @i_sDescription = N''
-
-  EXECUTE Console.InsertIntoPackageIdTypes
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sPackageName = N'SXuStaffingParse_X',
-    @i_sIdType = N'ErsatzStaffingEventId',
-    @i_sDescription = N''
-
-  EXECUTE Console.PostInsertIntoPackageIdTypes @sDmcName
-
-  EXECUTE Console.PreInsertIntoPackageVariables @i_EpicReleased = @EpicReleased
-
-  -- Insert into PackageVariables
-  --    No data   
-
-  EXECUTE Console.PostInsertIntoPackageVariables
-
-  EXECUTE Console.PreInsertIntoPackageQueryExtensions
-
-  -- Insert into PackageQueryExtensions
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoProcedureEtls @sDmcName, @EpicReleased
-
-  -- Insert into ProcedureEtls
-  --    No data   
-
-  EXECUTE Console.PostInsertIntoProcedureEtls
-
-  EXECUTE Console.PreInsertIntoTableEtls @sDmcName, @EpicReleased
-
-  -- Insert into TableEtls
-  EXECUTE Console.InsertIntoTableEtls
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sDmcType = N'Fact',
-    @i_sEpicImportTableName = N'SXuStaffingEventFactXImport',
-    @i_sExistingBackfillIdsImportTableName = N'SXuStaffingEventFactXExistingBackfillIdsImport',
-    @i_sDeleteImportTableName = N'SXuStaffingEventFactXDeleteImport',
-    @i_sTransformProcedure = N'',
-    @i_sProcessProcedure = N'',
-    @i_sCleanupProcedure = N'',
-    @i_sFixCleanupProcedure = N'',
-    @i_Bridge = 0,
-    @i_ClarityExtraction = 1,
-    @i_CustomExtraction = 1,
-    @i_Transform = 1,
-    @i_Load = 1,
-    @i_ProcessDeletes = 1,
-    @i_ProcessIdMappings = 0,
-    @i_AutomateIdRemapping = 0,
-    @i_Hidden = 0,
-    @i_sParent = NULL,
-    @i_sGranularity = N'',
-    @i_sImportTableGranularity = NULL,
-    @i_sImportTableDescription = N'',
-    @i_EpicReleased = 0,
-    @i_EtlLeadOwned = 0,
-    @i_HasStandard = 0,
-    @i_ExcludeFromNightly = 0,
-    @i_ExcludeFromNightlyReleased = 0,
-    @i_ExcludeFromNightlyOverride = NULL,
-    @i_StoreSourceData = 0,
-    @i_IsCci = 1,
-    @i_RunCheckDeletesBeforeProcess = 0,
-    @i_ForceSourceDataLookups = 0,
-    @i_AllowConcurrentNonQueryPackages = 1,
-    @i_AllowMultipleSourceRecords = 0,
-    @i_IsTimespanTable = 0,
-    @i_CleanupProcedureCompliesWithChangeTracking = 0
-
-  EXECUTE Console.PreInsertIntoTableEtlColumns @sDmcName, @EpicReleased
-
-  -- Insert into TableEtlColumns
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'SXuStaffingEventKey',
-    @i_sBaseColumnName = N'SXuStaffingEventKey',
-    @i_sDataType = N'bigint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 1,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Surrogate key used to uniquely identify the record',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 0,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'IdTypeId',
-    @i_sBaseColumnName = N'IdTypeId',
-    @i_sDataType = N'smallint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 1,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Source IdType ID for the record',
-    @i_sImportDescription = N'Source IdType ID for the record',
-    @i_iIndex = 10,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'IdType',
-    @i_sBaseColumnName = N'IdType',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 1,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Source ID type for the record',
-    @i_sImportDescription = N'Source ID type for the record',
-    @i_iIndex = 20,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'Id',
-    @i_sBaseColumnName = N'Id',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 1,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Source ID for the record',
-    @i_sImportDescription = N'Source ID for the record',
-    @i_iIndex = 30,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'NumericBaseId',
-    @i_sBaseColumnName = N'NumericBaseId',
-    @i_sDataType = N'numeric(18,0)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
-    @i_sImportDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
-    @i_iIndex = 40,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'StringBaseId',
-    @i_sBaseColumnName = N'StringBaseId',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
-    @i_sImportDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
-    @i_iIndex = 50,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'Count',
-    @i_sBaseColumnName = N'Count',
-    @i_sDataType = N'tinyint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'1',
-    @i_sDeleteValue = N'0',
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 1,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Artificial measure on which calculations can be done. The value is 0 for rows marked as deleted, 1 otherwise.',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 60,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_CreationInstant',
-    @i_sBaseColumnName = N'_CreationInstant',
-    @i_sDataType = N'datetime',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The date and time the record was created',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 70,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_LastUpdatedInstant',
-    @i_sBaseColumnName = N'_LastUpdatedInstant',
-    @i_sDataType = N'datetime',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The date and time the record was last updated',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 80,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_IsInferred',
-    @i_sBaseColumnName = N'_IsInferred',
-    @i_sDataType = N'tinyint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = N'0',
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'1/0 column that indicates whether the record is inferred',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 90,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_IsDeleted',
-    @i_sBaseColumnName = N'_IsDeleted',
-    @i_sDataType = N'tinyint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = N'0',
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'1/0 column that indicates whether the record is deleted',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 100,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_PrimaryPackageToImpactRecord',
-    @i_sBaseColumnName = N'_PrimaryPackageToImpactRecord',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'*Unknown',
-    @i_sDeleteValue = N'',
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The name of the primary package to impact the record',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 110,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_MostRecentPackageToImpactRecord',
-    @i_sBaseColumnName = N'_MostRecentPackageToImpactRecord',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'*Unknown',
-    @i_sDeleteValue = N'',
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The name of the most recent package to impact the record',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 120,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_NumberOfSources',
-    @i_sBaseColumnName = N'_NumberOfSources',
-    @i_sDataType = N'smallint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'0',
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The number of sources contributing to the record',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 130,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 1,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_PackageId',
-    @i_sBaseColumnName = N'_PackageId',
-    @i_sDataType = N'smallint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'ID of the package that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
-    @i_sImportDescription = N'ID of the package that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
-    @i_iIndex = 140,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_SourceId',
-    @i_sBaseColumnName = N'_SourceId',
-    @i_sDataType = N'int',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'ID of the source that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
-    @i_sImportDescription = N'ID of the source that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
-    @i_iIndex = 150,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_IsIncremental',
-    @i_sBaseColumnName = N'_IsIncremental',
-    @i_sDataType = N'bit',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Whether this row came from the incremental or backfill version of the package. For query-based packages, this column is auto-populated. For stored procedure and custom SSIS packages, it can remain NULL.',
-    @i_sImportDescription = N'Whether this row came from the incremental or backfill version of the package. For query-based packages, this column is auto-populated. For stored procedure and custom SSIS packages, it can remain NULL.',
-    @i_iIndex = 160,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'_LoadId',
-    @i_sBaseColumnName = N'_LoadId',
-    @i_sDataType = N'tinyint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 1,
-    @i_DeleteImport = 1,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'ID of the load attempt the row is associated with. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate.',
-    @i_sImportDescription = N'ID of the load attempt the row is associated with. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate.',
-    @i_iIndex = 170,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeDurableKey',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'bigint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'-1',
-    @i_sDeleteValue = N'-3',
-    @i_Reporting = 1,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 1,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'',
-    @i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
-    @i_iIndex = 180,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'DurableKey',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The Id corresponding to the EmployeeDim lookup ',
-    @i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
-    @i_iIndex = 190,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeRoleKey',
-    @i_sBaseColumnName = N'EmployeeRole',
-    @i_sDataType = N'bigint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'-1',
-    @i_sDeleteValue = N'-3',
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 1,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 200,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeRoleIdTypeId',
-    @i_sBaseColumnName = N'EmployeeRole',
-    @i_sDataType = N'smallint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The IdType ID corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_sImportDescription = N'The IdType ID corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_iIndex = 210,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeRoleIdType',
-    @i_sBaseColumnName = N'EmployeeRole',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The IdType corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_sImportDescription = N'The IdType corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_iIndex = 220,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeRoleId',
-    @i_sBaseColumnName = N'EmployeeRole',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The Id corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_sImportDescription = N'The Id corresponding to the SXu_EmployeeRoleDimX lookup ',
-    @i_iIndex = 230,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'StaffingDateKey',
-    @i_sBaseColumnName = N'StaffingDate',
-    @i_sDataType = N'bigint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'-1',
-    @i_sDeleteValue = N'-3',
-    @i_Reporting = 1,
-    @i_Import = 0,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 1,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 240,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'StaffingDate',
-    @i_sBaseColumnName = N'StaffingDate',
-    @i_sDataType = N'datetime',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'',
-    @i_sImportDescription = N'',
-    @i_iIndex = 250,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
-
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'HoursLogged',
-    @i_sBaseColumnName = N'HoursLogged',
-    @i_sDataType = N'numeric(18,2)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 1,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 1,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'Number of hours logged to the role by the employee on the
+	EXECUTE Console.PreDmcScript @sDmcName,
+		@EpicReleased,
+		@HasDeveloperAccess,
+		@ScriptType
+
+	EXECUTE Console.PreInsertIntoEtlDependencies @sDmcName,
+		@EpicReleased,
+		@ScriptType,
+		@sPackageNames
+
+	-- Insert into EtlDependencies
+	EXECUTE Console.InsertIntoEtlDependencies @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sDependentObjectName = N'SXuStaffingEventLoad_X',
+		@i_sDependentObjectType = N'Package',
+		@i_sDependencyTableEtlName = N'EmployeeDim',
+		@i_sDependencyObjectName = N'EmployeeDim',
+		@i_sDependencyObjectType = N'Component',
+		@i_sDependencyType = N'Load',
+		@i_EpicReleased = 0,
+		@i_InheritedFromParentDmc = 0
+
+	EXECUTE Console.InsertIntoEtlDependencies @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sDependentObjectName = N'SXuStaffingEventLoad_X',
+		@i_sDependentObjectType = N'Package',
+		@i_sDependencyTableEtlName = N'SXu_EmployeeRoleDimX',
+		@i_sDependencyObjectName = N'SXu_EmployeeRoleDimX',
+		@i_sDependencyObjectType = N'Component',
+		@i_sDependencyType = N'Load',
+		@i_EpicReleased = 0,
+		@i_InheritedFromParentDmc = 0
+
+	EXECUTE Console.InsertIntoEtlDependencies @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sDependentObjectName = N'SXuStaffingParse_X',
+		@i_sDependentObjectType = N'Package',
+		@i_sDependencyTableEtlName = N'EmployeeDim',
+		@i_sDependencyObjectName = N'EmployeeDim',
+		@i_sDependencyObjectType = N'Component',
+		@i_sDependencyType = N'Load',
+		@i_EpicReleased = 0,
+		@i_InheritedFromParentDmc = 0
+
+	EXECUTE Console.InsertIntoEtlDependencies @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sDependentObjectName = N'SXuStaffingParse_X',
+		@i_sDependentObjectType = N'Package',
+		@i_sDependencyTableEtlName = N'SXu_EmployeeRoleDimX',
+		@i_sDependencyObjectName = N'SXu_EmployeeRoleDimX',
+		@i_sDependencyObjectType = N'Component',
+		@i_sDependencyType = N'Load',
+		@i_EpicReleased = 0,
+		@i_InheritedFromParentDmc = 0
+
+	EXECUTE Console.PostInsertIntoEtlDependencies @sDmcName,
+		@EpicReleased
+
+	EXECUTE Console.PreInsertIntoLookups @sDmcName,
+		@EpicReleased
+
+	-- Insert into Lookups
+	EXECUTE Console.InsertIntoLookups @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sKeyColumnName = N'EmployeeDurableKey',
+		@i_sLookupTableName = N'EmployeeDim',
+		@i_sLookupType = N'DurableKey',
+		@i_sIdTypeColumnName = NULL,
+		@i_sIdColumnName = N'EmployeeDurableKey',
+		@i_sIdTypeIdColumnName = NULL,
+		@i_sNumericIdColumnName = NULL,
+		@i_sDateColumnName = NULL,
+		@i_sSourceColumnName = NULL,
+		@i_MergeShouldUpdate = 1,
+		@i_EpicReleased = 0
+
+	EXECUTE Console.InsertIntoLookups @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sKeyColumnName = N'EmployeeRoleKey',
+		@i_sLookupTableName = N'SXu_EmployeeRoleDimX',
+		@i_sLookupType = N'Id',
+		@i_sIdTypeColumnName = N'EmployeeRoleIdType',
+		@i_sIdColumnName = N'EmployeeRoleId',
+		@i_sIdTypeIdColumnName = N'EmployeeRoleIdTypeId',
+		@i_sNumericIdColumnName = NULL,
+		@i_sDateColumnName = NULL,
+		@i_sSourceColumnName = NULL,
+		@i_MergeShouldUpdate = 1,
+		@i_EpicReleased = 0
+
+	EXECUTE Console.InsertIntoLookups @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sKeyColumnName = N'StaffingDateKey',
+		@i_sLookupTableName = N'DateDim',
+		@i_sLookupType = N'Date',
+		@i_sIdTypeColumnName = NULL,
+		@i_sIdColumnName = N'StaffingDate',
+		@i_sIdTypeIdColumnName = NULL,
+		@i_sNumericIdColumnName = NULL,
+		@i_sDateColumnName = NULL,
+		@i_sSourceColumnName = NULL,
+		@i_MergeShouldUpdate = 1,
+		@i_EpicReleased = 0
+
+	EXECUTE Console.InsertIntoLookups @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sKeyColumnName = N'EmployeeKey',
+		@i_sLookupTableName = N'EmployeeDim',
+		@i_sLookupType = N'Key',
+		@i_sIdTypeColumnName = NULL,
+		@i_sIdColumnName = N'EmployeeKey',
+		@i_sIdTypeIdColumnName = NULL,
+		@i_sNumericIdColumnName = NULL,
+		@i_sDateColumnName = NULL,
+		@i_sSourceColumnName = NULL,
+		@i_MergeShouldUpdate = 1,
+		@i_EpicReleased = 0
+
+	-- Insert into DmcMatching
+	--    No data   
+	-- Insert into MatchingRules
+	--    No data   
+	-- Insert into MatchingRuleColumns
+	--    No data   
+	-- Insert into MatchingRuleColumnExcludedValues
+	--    No data   
+	EXECUTE Console.PreInsertIntoPackages @i_sDmcName = @sDmcName,
+		@i_EpicReleased = @EpicReleased,
+		@i_sPackageNames = @sPackageNames
+
+	-- Insert into Packages
+	EXECUTE Console.InsertIntoPackages @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sDisplayName = N'',
+		@i_sGroupName = N'',
+		@i_sProcedureName = N'dbo.SXu_Ersatz_StaffingEventFact_Load_X',
+		@i_sExtractMethod = N'Procedure',
+		@i_sDestinationType = N'Reporting',
+		@i_sAction = N'Load',
+		@i_SingleUse = 0,
+		@i_ExcludeFromNightly = 0,
+		@i_ExcludeFromNightlyReleased = 0,
+		@i_ExcludeFromNightlyOverride = NULL,
+		@i_iProcessIndex = NULL,
+		@i_sDescription = N'',
+		@i_sClarityFullExtractQuery = N'',
+		@i_sClarityOracleFullExtractQuery = N'',
+		@i_sClarityIncrementalExtractQuery = N'',
+		@i_sClarityOracleIncrementalExtractQuery = N'',
+		@i_sClarityBackfillDeleteExtractQuery = N'',
+		@i_sClarityOracleBackfillDeleteExtractQuery = N'',
+		@i_iFirstEpicVersionId = 98,
+		@i_iLastEpicVersionId = 32767,
+		@i_sClarityBackfillThreshold = N'',
+		@i_sClarityIncrementalThreshold = N'',
+		@i_sRandomSampleSize = N'',
+		@i_sRandomSampleThreshold = N'',
+		@i_EpicReleased = 0,
+		@i_EtlLeadOwned = 0,
+		@i_sLineageProcedureName = N'',
+		@i_NeedsClarityValidation = 0,
+		@i_ExecuteIn32BitMode = NULL,
+		@i_sCatalogLocation = N'',
+		@i_IsTargetingPackageSpecificImportTable = 1,
+		@i_SupportsMultipleClarityVersions = 0,
+		@i_ClarityFullExtractQueryBatchMode = 0,
+		@i_ClarityIncrementalExtractQueryBatchMode = 0,
+		@i_IgnoreStringIdTypesDuringLoad = 0,
+		@i_PerformsReverseBusinessKeyLookups = 0,
+		@i_RecoverOnFailure = 1,
+		@i_sClarityUniqueTableOverrideCode = N'',
+		@i_sClarityOracleUniqueTableOverrideCode = N''
+
+	EXECUTE Console.InsertIntoPackages @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sDisplayName = N'',
+		@i_sGroupName = N'',
+		@i_sProcedureName = N'',
+		@i_sExtractMethod = N'SSIS',
+		@i_sDestinationType = N'Reporting',
+		@i_sAction = N'Load',
+		@i_SingleUse = 0,
+		@i_ExcludeFromNightly = 0,
+		@i_ExcludeFromNightlyReleased = 0,
+		@i_ExcludeFromNightlyOverride = NULL,
+		@i_iProcessIndex = 0,
+		@i_sDescription = N'',
+		@i_sClarityFullExtractQuery = N'',
+		@i_sClarityOracleFullExtractQuery = N'',
+		@i_sClarityIncrementalExtractQuery = N'',
+		@i_sClarityOracleIncrementalExtractQuery = N'',
+		@i_sClarityBackfillDeleteExtractQuery = N'',
+		@i_sClarityOracleBackfillDeleteExtractQuery = N'',
+		@i_iFirstEpicVersionId = 98,
+		@i_iLastEpicVersionId = 32767,
+		@i_sClarityBackfillThreshold = N'',
+		@i_sClarityIncrementalThreshold = N'',
+		@i_sRandomSampleSize = N'',
+		@i_sRandomSampleThreshold = N'',
+		@i_EpicReleased = 0,
+		@i_EtlLeadOwned = 0,
+		@i_sLineageProcedureName = N'',
+		@i_NeedsClarityValidation = 0,
+		@i_ExecuteIn32BitMode = 0,
+		@i_sCatalogLocation = N'',
+		@i_IsTargetingPackageSpecificImportTable = 0,
+		@i_SupportsMultipleClarityVersions = 0,
+		@i_ClarityFullExtractQueryBatchMode = 0,
+		@i_ClarityIncrementalExtractQueryBatchMode = 0,
+		@i_IgnoreStringIdTypesDuringLoad = 0,
+		@i_PerformsReverseBusinessKeyLookups = 0,
+		@i_RecoverOnFailure = 1,
+		@i_sClarityUniqueTableOverrideCode = N'',
+		@i_sClarityOracleUniqueTableOverrideCode = N''
+
+	EXECUTE Console.PreInsertIntoPackageSources @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageSources
+	EXECUTE Console.InsertIntoPackageSources @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_iSourceId = 10001,
+		@i_sSourceName = N'SXu ErsatzHR',
+		@i_sIdTypeOverride = N'',
+		@i_RepeatBackfill = 0,
+		@i_RunIncremental = 0
+
+	EXECUTE Console.InsertIntoPackageSources @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_iSourceId = 10001,
+		@i_sSourceName = N'SXu ErsatzHR',
+		@i_sIdTypeOverride = N'',
+		@i_RepeatBackfill = 0,
+		@i_RunIncremental = 0
+
+	EXECUTE Console.PostInsertIntoPackageSources @sDmcName
+
+	-- Insert into PackageBaseIdColumns
+	--    No data   
+	EXECUTE Console.PreInsertIntoPackageCategoryTables @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageCategoryTables
+	--    No data   
+	EXECUTE Console.PreInsertIntoPackageClaritySourceColumns @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageClaritySourceColumns
+	--    No data   
+	EXECUTE Console.PreInsertIntoPackageClarityTables @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageClarityTables
+	--    No data   
+	EXECUTE Console.PostInsertIntoPackageClarityTables
+
+	EXECUTE Console.PreInsertIntoPackageColumns @EpicReleased
+
+	-- Insert into PackageColumns
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'_IsIncremental',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'bit',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'_LoadId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'tinyint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'_PackageId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'_SourceId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'int',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'DurableKey',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeDurableKey',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 0,
+		@i_sDataType = N'bigint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeId',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeIdType',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeIdTypeId',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeKey',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 0,
+		@i_sDataType = N'bigint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeRoleId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeRoleIdType',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 0,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeRoleIdTypeId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 0,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'HoursLogged',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'numeric',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = 18,
+		@i_iNumericScale = 2,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'Id',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'IdType',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'IdTypeId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'NumericBaseId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'numeric',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = 18,
+		@i_iNumericScale = 0,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'StaffingDate',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'datetime',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'StringBaseId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'_IsIncremental',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'bit',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'_LoadId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'tinyint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'_PackageId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'_SourceId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'int',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'DurableKey',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeDurableKey',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'bigint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeId',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeIdType',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeIdTypeId',
+		@i_sDescription = N'',
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeKey',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'bigint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeRoleId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeRoleIdType',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'EmployeeRoleIdTypeId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'HoursLogged',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'numeric',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = 18,
+		@i_iNumericScale = 2,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'Id',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'IdType',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'IdTypeId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'smallint',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'NumericBaseId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'numeric',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = 18,
+		@i_iNumericScale = 0,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'StaffingDate',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'datetime',
+		@i_iStringLength = NULL,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.InsertIntoPackageColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sColumnName = N'StringBaseId',
+		@i_sDescription = NULL,
+		@i_sExpression = NULL,
+		@i_IgnoreError = 1,
+		@i_sDataType = N'nvarchar',
+		@i_iStringLength = 50,
+		@i_iNumericPrecision = NULL,
+		@i_iNumericScale = NULL,
+		@i_IsDelete = 0,
+		@i_IsValid = 1,
+		@i_EpicReleased = 0,
+		@i_sClarityTimeZone = NULL,
+		@i_sTimeZoneOverride = NULL
+
+	EXECUTE Console.PreInsertIntoPackageAllowedForeignKeyIdTypes
+
+	-- Insert into PackageAllowedForeignKeyIdTypes
+	EXECUTE Console.InsertIntoPackageAllowedForeignKeyIdTypes @i_sDmcName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sLookupDmcName = N'SXu_EmployeeRoleDimX',
+		@i_sIdTypeIdColumnName = N'EmployeeRoleIdTypeId',
+		@i_sIdType = N'ErsatzEmployeeRoleId',
+		@i_EpicReleased = 0
+
+	EXECUTE Console.PostInsertIntoPackageAllowedForeignKeyIdTypes @sDmcName
+
+	EXECUTE Console.PreInsertIntoPackageDataDependencies @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageDataDependencies
+	--    No data   
+	EXECUTE Console.PreInsertIntoPackageDataSources @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageDataSources
+	EXECUTE Console.InsertIntoPackageDataSources @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sColumnName = N'EmployeeKey',
+		@i_sSourceTableName = N'EmployeeDIM',
+		@i_sSourceColumnName = N'EmployeeKey',
+		@i_EpicReleased = 0,
+		@i_IsAutomaticallyGenerated = 0,
+		@i_IsValid = 1
+
+	EXECUTE Console.PreInsertIntoPackageIdTypes @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageIdTypes
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sIdType = N'EpicUserID',
+		@i_sDescription = N''
+
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sIdType = N'EpicUserID|Line',
+		@i_sDescription = N''
+
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sIdType = N'ErsatzEmployeeId',
+		@i_sDescription = N''
+
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sIdType = N'ErsatzEmployeeRoleId',
+		@i_sDescription = N''
+
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingEventLoad_X',
+		@i_sIdType = N'ErsatzStaffingEventId',
+		@i_sDescription = N''
+
+	EXECUTE Console.InsertIntoPackageIdTypes @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sPackageName = N'SXuStaffingParse_X',
+		@i_sIdType = N'ErsatzStaffingEventId',
+		@i_sDescription = N''
+
+	EXECUTE Console.PostInsertIntoPackageIdTypes @sDmcName
+
+	EXECUTE Console.PreInsertIntoPackageVariables @i_EpicReleased = @EpicReleased
+
+	-- Insert into PackageVariables
+	--    No data   
+	EXECUTE Console.PostInsertIntoPackageVariables
+
+	EXECUTE Console.PreInsertIntoPackageQueryExtensions
+
+	-- Insert into PackageQueryExtensions
+	--    No data   
+	EXECUTE Console.PreInsertIntoProcedureEtls @sDmcName,
+		@EpicReleased
+
+	-- Insert into ProcedureEtls
+	--    No data   
+	EXECUTE Console.PostInsertIntoProcedureEtls
+
+	EXECUTE Console.PreInsertIntoTableEtls @sDmcName,
+		@EpicReleased
+
+	-- Insert into TableEtls
+	EXECUTE Console.InsertIntoTableEtls @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sDmcType = N'Fact',
+		@i_sEpicImportTableName = N'SXuStaffingEventFactXImport',
+		@i_sExistingBackfillIdsImportTableName = N'SXuStaffingEventFactXExistingBackfillIdsImport',
+		@i_sDeleteImportTableName = N'SXuStaffingEventFactXDeleteImport',
+		@i_sTransformProcedure = N'',
+		@i_sProcessProcedure = N'',
+		@i_sCleanupProcedure = N'',
+		@i_sFixCleanupProcedure = N'',
+		@i_Bridge = 0,
+		@i_ClarityExtraction = 1,
+		@i_CustomExtraction = 1,
+		@i_Transform = 1,
+		@i_Load = 1,
+		@i_ProcessDeletes = 1,
+		@i_ProcessIdMappings = 0,
+		@i_AutomateIdRemapping = 0,
+		@i_Hidden = 0,
+		@i_sParent = NULL,
+		@i_sGranularity = N'',
+		@i_sImportTableGranularity = NULL,
+		@i_sImportTableDescription = N'',
+		@i_EpicReleased = 0,
+		@i_EtlLeadOwned = 0,
+		@i_HasStandard = 0,
+		@i_ExcludeFromNightly = 0,
+		@i_ExcludeFromNightlyReleased = 0,
+		@i_ExcludeFromNightlyOverride = NULL,
+		@i_StoreSourceData = 0,
+		@i_IsCci = 1,
+		@i_RunCheckDeletesBeforeProcess = 0,
+		@i_ForceSourceDataLookups = 0,
+		@i_AllowConcurrentNonQueryPackages = 1,
+		@i_AllowMultipleSourceRecords = 0,
+		@i_IsTimespanTable = 0,
+		@i_CleanupProcedureCompliesWithChangeTracking = 0
+
+	EXECUTE Console.PreInsertIntoTableEtlColumns @sDmcName,
+		@EpicReleased
+
+	-- Insert into TableEtlColumns
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'SXuStaffingEventKey',
+		@i_sBaseColumnName = N'SXuStaffingEventKey',
+		@i_sDataType = N'bigint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 1,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Surrogate key used to uniquely identify the record',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 0,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'IdTypeId',
+		@i_sBaseColumnName = N'IdTypeId',
+		@i_sDataType = N'smallint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 1,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Source IdType ID for the record',
+		@i_sImportDescription = N'Source IdType ID for the record',
+		@i_iIndex = 10,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'IdType',
+		@i_sBaseColumnName = N'IdType',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 1,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Source ID type for the record',
+		@i_sImportDescription = N'Source ID type for the record',
+		@i_iIndex = 20,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'Id',
+		@i_sBaseColumnName = N'Id',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 1,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Source ID for the record',
+		@i_sImportDescription = N'Source ID for the record',
+		@i_iIndex = 30,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'NumericBaseId',
+		@i_sBaseColumnName = N'NumericBaseId',
+		@i_sDataType = N'numeric(18,0)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
+		@i_sImportDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
+		@i_iIndex = 40,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'StringBaseId',
+		@i_sBaseColumnName = N'StringBaseId',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
+		@i_sImportDescription = N'Primary base ID of the record. For Clarity query-based load packages, one of the base ID columns must be populated, and the unpopulated base ID column can be left NULL. If no base ID column is populated, Clarity query-based delete packages will not mark records as deleted.',
+		@i_iIndex = 50,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'Count',
+		@i_sBaseColumnName = N'Count',
+		@i_sDataType = N'tinyint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'1',
+		@i_sDeleteValue = N'0',
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 1,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Artificial measure on which calculations can be done. The value is 0 for rows marked as deleted, 1 otherwise.',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 60,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_CreationInstant',
+		@i_sBaseColumnName = N'_CreationInstant',
+		@i_sDataType = N'datetime',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The date and time the record was created',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 70,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_LastUpdatedInstant',
+		@i_sBaseColumnName = N'_LastUpdatedInstant',
+		@i_sDataType = N'datetime',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The date and time the record was last updated',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 80,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_IsInferred',
+		@i_sBaseColumnName = N'_IsInferred',
+		@i_sDataType = N'tinyint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = N'0',
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'1/0 column that indicates whether the record is inferred',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 90,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_IsDeleted',
+		@i_sBaseColumnName = N'_IsDeleted',
+		@i_sDataType = N'tinyint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = N'0',
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'1/0 column that indicates whether the record is deleted',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 100,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_PrimaryPackageToImpactRecord',
+		@i_sBaseColumnName = N'_PrimaryPackageToImpactRecord',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'*Unknown',
+		@i_sDeleteValue = N'',
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The name of the primary package to impact the record',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 110,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_MostRecentPackageToImpactRecord',
+		@i_sBaseColumnName = N'_MostRecentPackageToImpactRecord',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'*Unknown',
+		@i_sDeleteValue = N'',
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The name of the most recent package to impact the record',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 120,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_NumberOfSources',
+		@i_sBaseColumnName = N'_NumberOfSources',
+		@i_sDataType = N'smallint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'0',
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The number of sources contributing to the record',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 130,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 1,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_PackageId',
+		@i_sBaseColumnName = N'_PackageId',
+		@i_sDataType = N'smallint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'ID of the package that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
+		@i_sImportDescription = N'ID of the package that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
+		@i_iIndex = 140,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_SourceId',
+		@i_sBaseColumnName = N'_SourceId',
+		@i_sDataType = N'int',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'ID of the source that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
+		@i_sImportDescription = N'ID of the source that loaded this record. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate, keeping in mind that the ID is environment-specific.',
+		@i_iIndex = 150,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_IsIncremental',
+		@i_sBaseColumnName = N'_IsIncremental',
+		@i_sDataType = N'bit',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Whether this row came from the incremental or backfill version of the package. For query-based packages, this column is auto-populated. For stored procedure and custom SSIS packages, it can remain NULL.',
+		@i_sImportDescription = N'Whether this row came from the incremental or backfill version of the package. For query-based packages, this column is auto-populated. For stored procedure and custom SSIS packages, it can remain NULL.',
+		@i_iIndex = 160,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'_LoadId',
+		@i_sBaseColumnName = N'_LoadId',
+		@i_sDataType = N'tinyint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 1,
+		@i_DeleteImport = 1,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'ID of the load attempt the row is associated with. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate.',
+		@i_sImportDescription = N'ID of the load attempt the row is associated with. For query-based packages and stored procedure packages targeting the package specific import table, this column is auto-populated. Stored procedure packages targeting the main import table should be converted to load the package specific import table, not populate this column. For custom SSIS packages, use the stored procedure "dbo.GetSsisPackageImportMetadata" on the staging database to calculate what to populate.',
+		@i_iIndex = 170,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeDurableKey',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'bigint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'-1',
+		@i_sDeleteValue = N'-3',
+		@i_Reporting = 1,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 1,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'',
+		@i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
+		@i_iIndex = 180,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'DurableKey',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The Id corresponding to the EmployeeDim lookup ',
+		@i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
+		@i_iIndex = 190,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeRoleKey',
+		@i_sBaseColumnName = N'EmployeeRole',
+		@i_sDataType = N'bigint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'-1',
+		@i_sDeleteValue = N'-3',
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 1,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 200,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeRoleIdTypeId',
+		@i_sBaseColumnName = N'EmployeeRole',
+		@i_sDataType = N'smallint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The IdType ID corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_sImportDescription = N'The IdType ID corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_iIndex = 210,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeRoleIdType',
+		@i_sBaseColumnName = N'EmployeeRole',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The IdType corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_sImportDescription = N'The IdType corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_iIndex = 220,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeRoleId',
+		@i_sBaseColumnName = N'EmployeeRole',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The Id corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_sImportDescription = N'The Id corresponding to the SXu_EmployeeRoleDimX lookup ',
+		@i_iIndex = 230,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'StaffingDateKey',
+		@i_sBaseColumnName = N'StaffingDate',
+		@i_sDataType = N'bigint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'-1',
+		@i_sDeleteValue = N'-3',
+		@i_Reporting = 1,
+		@i_Import = 0,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 1,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 240,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'StaffingDate',
+		@i_sBaseColumnName = N'StaffingDate',
+		@i_sDataType = N'datetime',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'',
+		@i_sImportDescription = N'',
+		@i_iIndex = 250,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
+
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'HoursLogged',
+		@i_sBaseColumnName = N'HoursLogged',
+		@i_sDataType = N'numeric(18,2)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 1,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 1,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'Number of hours logged to the role by the employee on the
 staffing date.',
-    @i_sImportDescription = N'Number of hours logged to the role by the employee on the
+		@i_sImportDescription = N'Number of hours logged to the role by the employee on the
 staffing date.',
-    @i_iIndex = 260,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
+		@i_iIndex = 260,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
 
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeKey',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'bigint',
-    @i_AllowNull = 0,
-    @i_sDefaultValue = N'-1',
-    @i_sDeleteValue = N'-3',
-    @i_Reporting = 1,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 1,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'',
-    @i_sImportDescription = NULL,
-    @i_iIndex = 270,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeKey',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'bigint',
+		@i_AllowNull = 0,
+		@i_sDefaultValue = N'-1',
+		@i_sDeleteValue = N'-3',
+		@i_Reporting = 1,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 1,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'',
+		@i_sImportDescription = NULL,
+		@i_iIndex = 270,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
 
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeIdTypeId',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'smallint',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The IdType ID corresponding to the EmployeeDim lookup ',
-    @i_sImportDescription = N'The IdType ID corresponding to the EmployeeDim lookup ',
-    @i_iIndex = 280,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeIdTypeId',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'smallint',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The IdType ID corresponding to the EmployeeDim lookup ',
+		@i_sImportDescription = N'The IdType ID corresponding to the EmployeeDim lookup ',
+		@i_iIndex = 280,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
 
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeIdType',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The IdType corresponding to the EmployeeDim lookup ',
-    @i_sImportDescription = N'The IdType corresponding to the EmployeeDim lookup ',
-    @i_iIndex = 290,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeIdType',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The IdType corresponding to the EmployeeDim lookup ',
+		@i_sImportDescription = N'The IdType corresponding to the EmployeeDim lookup ',
+		@i_iIndex = 290,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
 
-  EXECUTE Console.InsertIntoTableEtlColumns
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sColumnName = N'EmployeeId',
-    @i_sBaseColumnName = N'Employee',
-    @i_sDataType = N'nvarchar(50)',
-    @i_AllowNull = 1,
-    @i_sDefaultValue = NULL,
-    @i_sDeleteValue = NULL,
-    @i_Reporting = 0,
-    @i_Import = 1,
-    @i_ExistingBackfillIdsImport = 0,
-    @i_DeleteImport = 0,
-    @i_SourceData = 0,
-    @i_SurrogateKey = 0,
-    @i_IdType = 0,
-    @i_Id = 0,
-    @i_IdTypeId = 0,
-    @i_Type1 = 0,
-    @i_Type2 = 0,
-    @i_DurableKey = 0,
-    @i_StartDate = 0,
-    @i_EndDate = 0,
-    @i_IsCurrent = 0,
-    @i_Junk = 0,
-    @i_PostEtlType1 = 0,
-    @i_PostEtlType2 = 0,
-    @i_SourceDataType1 = 0,
-    @i_SourceDataType2 = 0,
-    @i_sDescription = N'The Id corresponding to the EmployeeDim lookup ',
-    @i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
-    @i_iIndex = 300,
-    @i_HasStandard = 0,
-    @i_iColumnStandardId = NULL,
-    @i_EpicReleased = 0,
-    @i_ExclFromThirdPartyViews = 1,
-    @i_IsSourceColumn = 0,
-    @i_IsStatusColumn = 0,
-    @i_IsBridgeComboColumn = 0,
-    @i_IsPartitioningColumn = 0
+	EXECUTE Console.InsertIntoTableEtlColumns @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sColumnName = N'EmployeeId',
+		@i_sBaseColumnName = N'Employee',
+		@i_sDataType = N'nvarchar(50)',
+		@i_AllowNull = 1,
+		@i_sDefaultValue = NULL,
+		@i_sDeleteValue = NULL,
+		@i_Reporting = 0,
+		@i_Import = 1,
+		@i_ExistingBackfillIdsImport = 0,
+		@i_DeleteImport = 0,
+		@i_SourceData = 0,
+		@i_SurrogateKey = 0,
+		@i_IdType = 0,
+		@i_Id = 0,
+		@i_IdTypeId = 0,
+		@i_Type1 = 0,
+		@i_Type2 = 0,
+		@i_DurableKey = 0,
+		@i_StartDate = 0,
+		@i_EndDate = 0,
+		@i_IsCurrent = 0,
+		@i_Junk = 0,
+		@i_PostEtlType1 = 0,
+		@i_PostEtlType2 = 0,
+		@i_SourceDataType1 = 0,
+		@i_SourceDataType2 = 0,
+		@i_sDescription = N'The Id corresponding to the EmployeeDim lookup ',
+		@i_sImportDescription = N'The Id corresponding to the EmployeeDim lookup ',
+		@i_iIndex = 300,
+		@i_HasStandard = 0,
+		@i_iColumnStandardId = NULL,
+		@i_EpicReleased = 0,
+		@i_ExclFromThirdPartyViews = 1,
+		@i_IsSourceColumn = 0,
+		@i_IsStatusColumn = 0,
+		@i_IsBridgeComboColumn = 0,
+		@i_IsPartitioningColumn = 0
 
-  EXECUTE Console.PostInsertIntoTableEtlColumns @sDmcName
+	EXECUTE Console.PostInsertIntoTableEtlColumns @sDmcName
 
-  EXECUTE Console.PreInsertIntoDmcPartitionInfo @sDmcName, @EpicReleased
+	EXECUTE Console.PreInsertIntoDmcPartitionInfo @sDmcName,
+		@EpicReleased
 
-  -- Insert into DmcPartitionInfo
-  --    No data   
+	-- Insert into DmcPartitionInfo
+	--    No data   
+	EXECUTE Console.PostInsertIntoDmcPartitionInfo @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PostInsertIntoDmcPartitionInfo @sDmcName, @EpicReleased
+	EXECUTE Console.PreInsertIntoTableEtlIndexes @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PreInsertIntoTableEtlIndexes @sDmcName, @EpicReleased
+	-- Insert into TableEtlIndexes
+	--    No data   
+	EXECUTE Console.PreInsertIntoWarehouseTables @sDmcName,
+		@EpicReleased
 
-  -- Insert into TableEtlIndexes
-  --    No data   
+	-- Insert into WarehouseTables
+	EXECUTE Console.InsertIntoWarehouseTables @i_sTableEtlName = N'SXuStaffingEventFactX',
+		@i_sTableName = N'SXuStaffingEventFactX',
+		@i_sDescription = N'',
+		@i_sReportingTableType = N'Primary'
 
-  EXECUTE Console.PreInsertIntoWarehouseTables @sDmcName, @EpicReleased
+	EXECUTE Console.PostInsertIntoWarehouseTables @sDmcName,
+		@EpicReleased
 
-  -- Insert into WarehouseTables
-  EXECUTE Console.InsertIntoWarehouseTables
-    @i_sTableEtlName = N'SXuStaffingEventFactX',
-    @i_sTableName = N'SXuStaffingEventFactX',
-    @i_sDescription = N'',
-    @i_sReportingTableType = N'Primary'
+	EXECUTE Console.PreInsertIntoOrganizationFilter @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PostInsertIntoWarehouseTables @sDmcName, @EpicReleased
+	-- Insert into OrganizationFilter
+	EXECUTE Console.InsertIntoOrganizationFilter @i_sDmcName = N'SXuStaffingEventFactX',
+		@i_sReleasedFilterType = N'Disabled',
+		@i_xReleasedJoinPath = NULL,
+		@i_sOverrideFilterType = NULL,
+		@i_xOverrideJoinPath = NULL,
+		@i_UseOverride = 0
 
-  EXECUTE Console.PreInsertIntoOrganizationFilter @sDmcName, @EpicReleased
+	EXECUTE Console.PostInsertIntoOrganizationFilter @sDmcName,
+		@EpicReleased
 
-  -- Insert into OrganizationFilter
-  EXECUTE Console.InsertIntoOrganizationFilter
-    @i_sDmcName = N'SXuStaffingEventFactX',
-    @i_sReleasedFilterType = N'Disabled',
-    @i_xReleasedJoinPath = NULL,
-    @i_sOverrideFilterType = NULL,
-    @i_xOverrideJoinPath = NULL,
-    @i_UseOverride = 0
+	EXECUTE Console.PreInsertIntoDmcDurationStartAndEndColumns @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PostInsertIntoOrganizationFilter @sDmcName, @EpicReleased
+	-- Insert into DmcDurationStartAndEndColumns
+	--    No data   
+	EXECUTE Console.PreInsertIntoAuxiliaryProcedures @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PreInsertIntoDmcDurationStartAndEndColumns @sDmcName, @EpicReleased
+	-- Insert into AuxiliaryProcedures
+	--    No data   
+	EXECUTE Console.PreInsertIntoProcedureColumns @sDmcName,
+		@EpicReleased
 
-  -- Insert into DmcDurationStartAndEndColumns
-  --    No data   
+	-- Insert into ProcedureColumns
+	--    No data   
+	EXECUTE Console.PostInsertIntoProcedureColumns @sDmcName
 
-  EXECUTE Console.PreInsertIntoAuxiliaryProcedures @sDmcName, @EpicReleased
+	EXECUTE Console.PreInsertIntoProcedureDataDependencies @sDmcName,
+		@EpicReleased
 
-  -- Insert into AuxiliaryProcedures
-  --    No data   
+	-- Insert into ProcedureDataDependencies
+	--    No data   
+	EXECUTE Console.PreInsertIntoProcedureDataSources @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PreInsertIntoProcedureColumns @sDmcName, @EpicReleased
+	-- Insert into ProcedureDataSources
+	--    No data   
+	EXECUTE Console.PreInsertIntoWinningBusinessKeySourceGroups @sDmcName,
+		@EpicReleased
 
-  -- Insert into ProcedureColumns
-  --    No data   
+	-- Insert into WinningBusinessKeySourceGroups
+	--    No data   
+	EXECUTE Console.PreInsertIntoWinningBusinessKeySelectLogic @sDmcName,
+		@EpicReleased
 
-  EXECUTE Console.PostInsertIntoProcedureColumns @sDmcName
+	-- Insert into WinningBusinessKeySelectLogic
+	--    No data   
+	EXECUTE Console.PostDmcScript @sDmcName,
+		@EpicReleased,
+		@HasDeveloperAccess,
+		@ScriptType
 
-  EXECUTE Console.PreInsertIntoProcedureDataDependencies @sDmcName, @EpicReleased
+	--************************************************************************
+	-- PRE-CONVERSION
+	-- This code will be executed before the script starts changing the reporting tables.
+	-- Replace this comment with your code if needed.
+	-- For example if you have renamed an existing column in the metadata, you may want to 
+	-- add code to rename the column here otherwise the new column will be created and the
+	-- old column will be renamed to column_old.
+	-- EXECUTE <<insert Reporting Database>>..sp_rename 'dbo.SXuStaffingEventFactX.<<insert OldColumnName>>', '<<insert NewColumnName>>', 'COLUMN'
+	--************************************************************************
+	EXECUTE Console.CreateTablesInNonDev @sDmcName,
+		@RemoveHistoricalRows
 
-  -- Insert into ProcedureDataDependencies
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoProcedureDataSources @sDmcName, @EpicReleased
-
-  -- Insert into ProcedureDataSources
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoWinningBusinessKeySourceGroups @sDmcName, @EpicReleased
-
-  -- Insert into WinningBusinessKeySourceGroups
-  --    No data   
-
-  EXECUTE Console.PreInsertIntoWinningBusinessKeySelectLogic @sDmcName, @EpicReleased
-
-  -- Insert into WinningBusinessKeySelectLogic
-  --    No data   
-
-  EXECUTE Console.PostDmcScript @sDmcName, @EpicReleased, @HasDeveloperAccess, @ScriptType
-
-  --************************************************************************
-  -- PRE-CONVERSION
-  -- This code will be executed before the script starts changing the reporting tables.
-  -- Replace this comment with your code if needed.
-  -- For example if you have renamed an existing column in the metadata, you may want to 
-  -- add code to rename the column here otherwise the new column will be created and the
-  -- old column will be renamed to column_old.
- 
-  -- EXECUTE <<insert Reporting Database>>..sp_rename 'dbo.SXuStaffingEventFactX.<<insert OldColumnName>>', '<<insert NewColumnName>>', 'COLUMN'
-  --************************************************************************
-
-  EXECUTE Console.CreateTablesInNonDev @sDmcName, @RemoveHistoricalRows
-
-  --************************************************************************
-  -- POST-CONVERSION
-  -- This code will be executed after the script has changed the reporting tables.
-  -- Replace this comment with your code if needed.
-  -- For example if you have a column where the data type is changed in the metadata,
-  -- the install script will rename the existing column to column_old. You should consider resetting 
-  -- the backfill id if needed, add the code to move the data from column_old to column, 
-  -- and drop column_old in a background job.
-
-  -- Below are simple examples of actions that may be performed via post-conversion:
-
-  --  Example One: Reset package backfills
-  --  EXECUTE Epic.ResetBackfillLastId N'SXuStaffingEventFactX',
-  --          N'<<insert PackageName>>' -- If package name is NULL, backfill id for all packages for SXuStaffingEventFactX are updated
-
-  --  Example Two: Change column data type
-  --  EXECUTE Epic.InsertJob N'Deferred conversion: Populate column ''<<insert ColumnName>>'' in the table ''SXuStaffingEventFactX'' ',
-  --          N'<<insert logic to populate data and drop column_old>>',
-  --          N'SXuStaffingEventFactX', NULL, NULL,
-  --          N'<<insert Priority from Config.JobPriorities.Label>>'
-  --************************************************************************
-
-  -- Release the system level lock
-  EXECUTE Epic.LockEtl N'System', 0, @i_sLockedBy = N'Console Generated Script', @i_IsExecution = 0
-
+	--************************************************************************
+	-- POST-CONVERSION
+	-- This code will be executed after the script has changed the reporting tables.
+	-- Replace this comment with your code if needed.
+	-- For example if you have a column where the data type is changed in the metadata,
+	-- the install script will rename the existing column to column_old. You should consider resetting 
+	-- the backfill id if needed, add the code to move the data from column_old to column, 
+	-- and drop column_old in a background job.
+	-- Below are simple examples of actions that may be performed via post-conversion:
+	--  Example One: Reset package backfills
+	--  EXECUTE Epic.ResetBackfillLastId N'SXuStaffingEventFactX',
+	--          N'<<insert PackageName>>' -- If package name is NULL, backfill id for all packages for SXuStaffingEventFactX are updated
+	--  Example Two: Change column data type
+	--  EXECUTE Epic.InsertJob N'Deferred conversion: Populate column ''<<insert ColumnName>>'' in the table ''SXuStaffingEventFactX'' ',
+	--          N'<<insert logic to populate data and drop column_old>>',
+	--          N'SXuStaffingEventFactX', NULL, NULL,
+	--          N'<<insert Priority from Config.JobPriorities.Label>>'
+	--************************************************************************
+	-- Release the system level lock
+	EXECUTE Epic.LockEtl N'System',
+		0,
+		@i_sLockedBy = N'Console Generated Script',
+		@i_IsExecution = 0
 END TRY
+
 BEGIN CATCH
-  -- Release the system level lock
-  EXECUTE Epic.LockEtl N'System', 0, @i_sLockedBy = N'Console Generated Script', @i_IsExecution = 0
+	-- Release the system level lock
+	EXECUTE Epic.LockEtl N'System',
+		0,
+		@i_sLockedBy = N'Console Generated Script',
+		@i_IsExecution = 0
+		-- Throw the error message if any 
+		;
 
-  -- Throw the error message if any 
-  ; THROW;
-
+	THROW;
 END CATCH
-
-
