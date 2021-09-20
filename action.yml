@@ -1,6 +1,6 @@
-name: 'SQLAutoFormatter'
-description: 'Auto-format BigQuery queries.'
-author: 'yoheikikuta'
+name: 'PoorManSQLAutoFormatter'
+description: 'Auto-format SQL queries.'
+author: 'Shen Xu'
 
 inputs:
   github_token:
@@ -13,7 +13,7 @@ inputs:
   git_name:
     description: Username for auto-format commits.
     required: false
-    default: "BigQuery AutoFormatter"
+    default: "SQL AutoFormatter"
   git_email:
     description: Email address for auto-fix commits.
     required: false
