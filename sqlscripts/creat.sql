@@ -1,1 +1,7 @@
-with a as (select 1 as b) select * from a cros join cd
+WITH a
+AS (
+	SELECT 1 AS b
+	)
+SELECT *
+FROM a cros
+JOIN cd
