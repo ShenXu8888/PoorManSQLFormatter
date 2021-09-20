@@ -20,6 +20,9 @@ jobs:
                 wget https://github.com/Matts966/zetasql-formatter/releases/latest/download/zetasql-formatter_linux_x86_64.zip
                 sudo unzip zetasql-formatter_linux_x86_64.zip -d /usr/local/bin
                 rm zetasql-formatter_linux_x86_64.zip
+                sudo apt update
+                sudo apt install nodejs npm
+                npm install --global poor-mans-t-sql-formatter-cli
             - name: Auto-formatting queries
               id: AutoFormat
               uses: ./
