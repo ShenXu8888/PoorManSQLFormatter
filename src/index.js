@@ -15,7 +15,7 @@ function runAction() {
     log('Auto formatting the queries.');
     let output;
     try {
-        output = run("for file in `find . -name '*.sql'`; do sqlformat -f $file; done");
+        output = run("for file in `find . -name '*.sql'`; do sqlformat -f $file -g $file; done");
     } catch (ex) {
         output = ex.stdout;
     }
